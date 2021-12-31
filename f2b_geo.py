@@ -9,7 +9,18 @@ from pathlib import Path
 import urllib.request
 import tarfile
 import shutil
+from sqlalchemy import create_engine
 
+
+# SQL Alchemy Main Config
+# ------------------------------------------------------------------------------
+engine = create_engine("sqlite:///sqlite.db")
+from lib.record import bind_engine, record_banned
+bind_engine(engine)
+
+
+# Code blocks for main program of f2b_geo.py
+# ------------------------------------------------------------------------------ 
 def mmdb_download(action="download", license_key="LICENSE_KEY_HERE"):
     """Download GeoLite2 City .mmdb database file
 
@@ -50,10 +61,10 @@ def regex_match_string():
     2021-12-31 07:47:02,358 fail2ban.actions        [24605]: NOTICE  [sshd] Ban 74.87.110.94
 
     By using named matched groups:
-      _date   : group "date", formatted as 2021-01-01
-      _time   : group "time", formatted as 00:00
+      _date   : group "date", formatted as "2021-01-01"
+      _time   : group "time", formatted as "00:00"
       _status : group "status", formatted as "Ban"
-      _ip     : group "ip", formatted as 127.0.0.1
+      _ip     : group "ip", formatted as "127.0.0.1"
 
     Note
     ----
@@ -111,6 +122,7 @@ def geoip_reader(cap, mmdb="GeoLite2-City.mmdb"):
         x = reader.city(cap["ip"])
         cap_info = {"ip": cap["ip"],
                     "time": cap["time"],
+                    "date": cap["date"],
                     "Country": x.country.name,
                     "Division": x.subdivisions.most_specific.name,
                     "City": x.city.name,
@@ -151,9 +163,12 @@ def start(path_log="/var/log/fail2ban.log", path_mmdb="GeoLite2-City.mmdb"):
             cap = compiled.search(line).groupdict()
             if cap["status"] == "Ban":
                 cap_info = geoip_reader(cap, mmdb=path_mmdb)
-
+                
+                # Commit to sqlite database
+                record_banned(cap_info)
+                
+                # Print to stdout
                 cap_statement = f"Banned {cap_info['ip']} from {cap_info['Division']}, {cap_info['Country']} at {cap_info['time']}"
-
                 print(cap_statement)
 
 
