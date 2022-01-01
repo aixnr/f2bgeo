@@ -4,12 +4,12 @@ import time
 import os
 import re
 import geoip2.database
-import fire
 from pathlib import Path
-import urllib.request
 import tarfile
 import shutil
 from sqlalchemy import create_engine
+import subprocess
+import argparse
 
 
 # SQL Alchemy Main Config
@@ -39,7 +39,8 @@ def mmdb_download(action="download", license_key="LICENSE_KEY_HERE"):
         if license_key == "LICENSE_KEY_HERE":
             raise Exception("License key not present, please pass license_key parameter")
         if not Path(local_file).is_file():
-            urllib.request.urlretrieve(download_url, local_file)
+            # Using system's wget to download the database
+            subprocess.check_output(["wget", "-O", local_file, download_url])
 
         file_archive = tarfile.open(local_file)
         file_archive.extractall("GeoLite2")
@@ -48,12 +49,14 @@ def mmdb_download(action="download", license_key="LICENSE_KEY_HERE"):
         if not Path(local_db).is_file():
             for _f in Path("GeoLite2").rglob("*.mmdb"):
                 Path(local_db).write_bytes(_f.read_bytes())
-    
-    # If 'clear' is passed, delete all GeoLite2-related files
-    if action == "clean":
+
+        # Delete GeoLite2 directory and GeoLite2-City.tar.gz after extraction
         shutil.rmtree("GeoLite2", ignore_errors=True)
-        for each in  [local_file, local_db]: 
-            os.remove(each)
+        os.remove(local_file)
+    
+    # If 'clean' is passed at the cli (argparse), delete the .mmdb database
+    if action == "clean":
+        os.remove(local_db)
 
 
 def regex_match_string():
@@ -78,7 +81,7 @@ def regex_match_string():
     compiled: retype
     """
     _date = "(?P<date>[\d]{4}-[\d]{2}-[\d]{2})"
-    _time = "(?P<time>[\d]{2}:[\d]{2})"
+    _time = "(?P<time>[\d]{2}:[\d]{2}:[\d]{2})"
     _junk = "(.+?sshd\] )"
     _status = "(?P<status>\w*)"
     _ip = "(?P<ip>[\d]*.[\d]*.[\d]*.[\d].*)"
@@ -114,7 +117,7 @@ def geoip_reader(cap, mmdb="GeoLite2-City.mmdb"):
     
     Return
     ------
-    cap_info: str
+    cap_info: dict[str]
       Information of the offending IP
     """
     cap_info = {}
@@ -132,7 +135,7 @@ def geoip_reader(cap, mmdb="GeoLite2-City.mmdb"):
         return cap_info
 
 
-def start(path_log="/var/log/fail2ban.log", path_mmdb="GeoLite2-City.mmdb"):
+def main(path_log="/var/log/fail2ban.log", path_mmdb="GeoLite2-City.mmdb"):
     """Start logging offending IPs that were successfully banned after 3 failed attempts
 
     Parameters
@@ -172,8 +175,52 @@ def start(path_log="/var/log/fail2ban.log", path_mmdb="GeoLite2-City.mmdb"):
                 print(cap_statement)
 
 
+def cli():
+    """
+    Parser subcommands
+    ------------------
+    download : For download .mmdb database file from MaxMind server
+    start    : Start tailing and recording
+    clean    : Clean all the downloaded files
+    """
+    # Initialize ArgumentParser()
+    parser = argparse.ArgumentParser()
+    subparser = parser.add_subparsers(dest="command")
+    download = subparser.add_parser("download")
+    start = subparser.add_parser("start")
+    clean_download = subparser.add_parser("clean")
+
+    # Sub-command for downloading .mmdb binary database from MaxMind server
+    download.add_argument("--license", type=str, required=True, default=None,
+                          help="Register an account with MaxMind to get a license key to download the .mmdb file")
+
+    # Sub-command for the actual monitoring
+    start.add_argument("--logfile", type=str, required=False,
+                           default="/var/log/fail2ban.log", help="Location of Fail2Ban logfile")
+    start.add_argument("--mmdb", type=str, required=False,
+                           default="GeoLite2-City.mmdb", help="Location of the .mmdb binary DB file")
+
+    
+    # Complete the activation of ArgumentParser()
+    args = parser.parse_args()
+    
+    # Conditional switching
+    if args.command == "download":
+        mmdb_download(action="download", license_key=args.license)
+    elif args.command == "start":
+        main(path_log=args.logfile, path_mmdb=args.mmdb)
+    elif args.command == "clean":
+        mmdb_download(action="clean")
+    else:
+        # If no subcommand supplied
+        parser.print_help()
+    
+
 if __name__ == "__main__":
     try:
-        fire.Fire()
+        # Run cli() function, which first hits ArgumentParser()
+        cli()
+    
     except KeyboardInterrupt:
+        # Gracefully exit without traceback upon Ctrl-c
         sys.exit()
