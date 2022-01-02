@@ -16,6 +16,7 @@ All users are imposed with [2,000 total direct downloads limit in a 24 hour peri
 - [Downloading MaxMind GeoLite2 Database](#downloading-maxmind-geolite2-database)
 - [Running](#running)
 - [How Does It Work](#how-does-it-work)
+- [Denied But Not Banned](#denied-but-not-banned)
 - [License](#license)
 
 ## Dependencies
@@ -136,6 +137,26 @@ SELECT
 FROM
   banned
 ```
+
+## Denied But Not Banned
+
+My Fail2Ban example config bans an IP address after 3 consecutive failed attempts.
+That is great, but that means `f2bgeo.py` only logs IP addresses that were actually denied.
+
+There are attacks that are just one time and then bounces off.
+`failedsshd.py` is designed to collect this type of attempt (might not even be an attack) by reading output from `journalctl` that mentions either invalid user or someone tries to access SSH as `root`.
+It writes to the same `sqlite.db` database file but in a separate table, `ssh_denied`. Also uses `geoip2.database.Reader()` to get geoip information.
+
+```bash
+# Compile
+pyinstaller --onefile failedsshd.py
+
+# Run the binary
+./failedsshd
+```
+
+Root privilege is not needed to run it.
+Like `f2bgeo.py`, it outputs to `stdout` and writing to an sqlite database at the same time.
 
 ## License
 

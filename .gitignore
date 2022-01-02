@@ -1,9 +1,10 @@
 __pycache__
 env
+venv
 secrets.py
 build/
 dist/
-f2bgeo.spec
+*.spec
 sqlite.db
 GeoLite2-City.mmdb
 GeoLite2-City.tar.gz
