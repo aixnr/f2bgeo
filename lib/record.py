@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Float
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
 
 
 # Initial configuration
@@ -24,14 +25,17 @@ class Record(Base):
     __tablename__ = "banned"
 
     id = Column(Integer, primary_key=True)
-    date = Column(String)
-    time = Column(String)
+    datetimestr = Column(String)
+    unixepoch = Column(Float)
     ip = Column(String)
     city = Column(String)
     division = Column(String)
     country = Column(String)
     latitude = Column(String)
     longitude = Column(String)
+    network = Column(String)
+    asn = Column(String)
+    org = Column(String)
 
     def __repr__(self):
         return f"Banned {self.ip}"
@@ -40,16 +44,24 @@ class Record(Base):
 def record_banned(cap_info):
     """Commits info on banned IP addresses after being read by geoip2.database.Reader()
     """
+    # Convert datetimestr to unixepoch
+    _unixepoch = datetime.strptime(cap_info["datetimestr"], "%Y-%m-%d %H:%M:%S").timestamp()
+
+    # Start adding to the database
     ip_banned = Record(
-        date = cap_info["date"],
-        time = cap_info["time"],
+        datetimestr = cap_info["datetimestr"],
+        unixepoch = _unixepoch,
         ip = cap_info["ip"],
         country = cap_info["Country"],
         division = cap_info["Division"],
         city = cap_info["City"],
         latitude = cap_info["Latitude"],
-        longitude = cap_info["Longitude"]
+        longitude = cap_info["Longitude"],
+        network = cap_info["Network"],
+        asn = cap_info["ASN"],
+        org = cap_info["Org"]
     )
 
+    # Commit to the database
     session.add(ip_banned)
     session.commit()

@@ -3,7 +3,7 @@ import sys
 import time
 import os
 import re
-import geoip2.database
+from geoip2.database import Reader
 from pathlib import Path
 import tarfile
 import shutil
@@ -11,52 +11,69 @@ from sqlalchemy import create_engine
 import subprocess
 import argparse
 
+# Import custom modules
+from lib.show import show_table
+from lib.record import bind_engine, record_banned
+
 
 # SQL Alchemy Main Config
 # ------------------------------------------------------------------------------
 engine = create_engine("sqlite:///sqlite.db")
-from lib.record import bind_engine, record_banned
 bind_engine(engine)
 
 
 # Code blocks for main program of f2b_geo.py
 # ------------------------------------------------------------------------------ 
 def mmdb_download(action="download", license_key="LICENSE_KEY_HERE"):
-    """Download GeoLite2 City .mmdb database file
+    """Download City and ASN binary (.mmdb) database files.
 
     Parameter
     --------
     action: str
       If 'download', downloads the gzipped database. If 'clean', delete downloaded stuff
+    license_key: str
+      License key (registration required), passed by --license parameter at the CLI
     """
-    # Preparing to download
-    download_url = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={license_key}&suffix=tar.gz"
-    local_file = "GeoLite2-City.tar.gz"
-    local_db = "GeoLite2-City.mmdb"
+    # Preparing to download City database
+    url_city = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={license_key}&suffix=tar.gz"
+    db_city = "GeoLite2-City"
+
+    # Preparing to download ASN database
+    url_asn = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key={license_key}&suffix=tar.gz"
+    db_asn = "GeoLite2-ASN"
 
     # If 'download' is passed, download, extract, and move GeoLite2-City.mmdb to root cwd
     if action == "download":
         if license_key == "LICENSE_KEY_HERE":
-            raise Exception("License key not present, please pass license_key parameter")
-        if not Path(local_file).is_file():
+            raise Exception("License key not present, please pass the --license parameter")
+        
+        for _db, _url in zip([db_city, db_asn], [url_city, url_asn]):
+            if not Path(f"{_db}.mmdb").is_file():
             # Using system's wget to download the database
-            subprocess.check_output(["wget", "-O", local_file, download_url])
+                _args = ["wget", "-O", f"{_db}.tar.gz", _url]
+                subprocess.check_output(_args)
+            
+            if not Path(f"{_db}.tar.gz").is_file():
+                raise Exception("Fatal error, download failed")
+            
+            else:
+                file_archive = tarfile.open(f"{_db}.tar.gz")
+                file_archive.extractall(_db)
+                file_archive.close()
 
-        file_archive = tarfile.open(local_file)
-        file_archive.extractall("GeoLite2")
-        file_archive.close()
+            for _f in Path(_db).rglob("*.mmdb"):
+                Path(f"{_db}.mmdb").write_bytes(_f.read_bytes())
 
-        if not Path(local_db).is_file():
-            for _f in Path("GeoLite2").rglob("*.mmdb"):
-                Path(local_db).write_bytes(_f.read_bytes())
+            shutil.rmtree(_db, ignore_errors=True)
+            os.remove(f"{_db}.tar.gz")
 
-        # Delete GeoLite2 directory and GeoLite2-City.tar.gz after extraction
-        shutil.rmtree("GeoLite2", ignore_errors=True)
-        os.remove(local_file)
-    
-    # If 'clean' is passed at the cli (argparse), delete the .mmdb database
-    if action == "clean":
-        os.remove(local_db)
+     # If 'clean' is passed at the cli (argparse), delete the .mmdb database
+    elif action == "clean":
+        for _db in [db_city, db_asn]:
+            os.remove(f"{_db}.mmdb")
+
+    else:
+        raise Exception("Invalid option, use either 'download' or 'clean'")
 
 
 def regex_match_string():
@@ -64,10 +81,9 @@ def regex_match_string():
     2021-12-31 07:47:02,358 fail2ban.actions        [24605]: NOTICE  [sshd] Ban 74.87.110.94
 
     By using named matched groups:
-      _date   : group "date", formatted as "2021-01-01"
-      _time   : group "time", formatted as "00:00"
-      _status : group "status", formatted as "Ban"
-      _ip     : group "ip", formatted as "127.0.0.1"
+      _datetimestr : group "datetime", formatted as 2021-12-31 00:00:00
+      _status      : group "status", formatted as "Ban"
+      _ip          : group "ip", formatted as "127.0.0.1"
 
     Note
     ----
@@ -80,14 +96,13 @@ def regex_match_string():
     ------
     compiled: retype
     """
-    _date = "(?P<date>[\d]{4}-[\d]{2}-[\d]{2})"
-    _time = "(?P<time>[\d]{2}:[\d]{2}:[\d]{2})"
+    _datetimestr ="(?P<datetimestr>[\d]{4}-[\d]{2}-[\d]{2} [\d]{2}:[\d]{2}:[\d]{2})"
     _junk = "(.+?sshd\] )"
     _status = "(?P<status>\w*)"
     _ip = "(?P<ip>[\d]*.[\d]*.[\d]*.[\d].*)"
     _crap = "\ - (.*)"
 
-    _combined_string = _date + " " + _time + _junk + _status + " " + _ip
+    _combined_string = _datetimestr + _junk + _status + " " + _ip
     compiled = re.compile(rf"{_combined_string}")
 
     return compiled
@@ -112,7 +127,7 @@ def follow(logfile):
         yield line
 
 
-def geoip_reader(cap, mmdb="GeoLite2-City.mmdb"):
+def geoip_reader(cap):
     """Return information after reading .mmdb database using geoip2.database.Reader()
     
     Return
@@ -121,57 +136,56 @@ def geoip_reader(cap, mmdb="GeoLite2-City.mmdb"):
       Information of the offending IP
     """
     cap_info = {}
-    with geoip2.database.Reader(mmdb) as reader:
+    
+    # Obtain information from GeoLite2-City.mmdb
+    with Reader("GeoLite2-City.mmdb") as reader:
         x = reader.city(cap["ip"])
         cap_info = {"ip": cap["ip"],
-                    "time": cap["time"],
-                    "date": cap["date"],
+                    "datetimestr": cap["datetimestr"],
                     "Country": x.country.name,
                     "Division": x.subdivisions.most_specific.name,
                     "City": x.city.name,
                     "Latitude": x.location.latitude,
                     "Longitude": x.location.longitude}
-        
-        return cap_info
+
+    # Obtain information from GeoLite2-ASN.mmdb
+    with Reader("GeoLite2-ASN.mmdb") as reader:
+        x = reader.asn(cap["ip"]) 
+        cap_info["Network"] = x.network.with_prefixlen
+        cap_info["ASN"] = x.autonomous_system_number
+        cap_info["Org"] = x.autonomous_system_organization
+
+    return cap_info
 
 
-def main(path_log="/var/log/fail2ban.log", path_mmdb="GeoLite2-City.mmdb"):
+def main(path_log="/var/log/fail2ban.log"):
     """Start logging offending IPs that were successfully banned after 3 failed attempts
 
     Parameters
     ----------
     path_log: str
       Defaults to location of fail2ban.log file
-    path_mmdb: str
-      Location of GeoLite2-City.mmdb MaxMind binary DB file, defaults to current directory
     """
-    # Check for filepaths
-    for file_path in [path_log, path_mmdb]:
-        _path = Path(file_path)
-        if _path.is_file():
-            continue
-        else:
-            raise Exception(f"{file_path} not found")
+    # Check location for /var/log/fail2ban.log
+    if not Path(path_log).is_file():
+        raise FileNotFoundError
 
+    # Follow the log file
     logfile = open(path_log, "r")
     loglines = follow(logfile)
 
-    logfile = open("/var/log/fail2ban.log", "r")
-    loglines = follow(logfile)
-
-    cap_info = {}
+    # Generate regex matching object
     compiled = regex_match_string()
+
     for line in loglines:
         if line.find("NOTICE") != -1:
             cap = compiled.search(line).groupdict()
             if cap["status"] == "Ban":
-                cap_info = geoip_reader(cap, mmdb=path_mmdb)
+                cap_info = geoip_reader(cap)
                 
-                # Commit to sqlite database
+                # Commit to sqlite database and print to stdout
                 record_banned(cap_info)
-                
-                # Print to stdout
-                cap_statement = f"Banned {cap_info['ip']} from {cap_info['Division']}, {cap_info['Country']} at {cap_info['time']}"
+                cap_statement = f"Banned {cap_info['ip']} from {cap_info['Division']}, {cap_info['Country']} at {cap_info['datetimestr']}"
                 print(cap_statement)
 
 
@@ -189,6 +203,7 @@ def cli():
     download = subparser.add_parser("download")
     start = subparser.add_parser("start")
     clean_download = subparser.add_parser("clean")
+    show = subparser.add_parser("show")
 
     # Sub-command for downloading .mmdb binary database from MaxMind server
     download.add_argument("--license", type=str, required=True, default=None,
@@ -196,11 +211,14 @@ def cli():
 
     # Sub-command for the actual monitoring
     start.add_argument("--logfile", type=str, required=False,
-                           default="/var/log/fail2ban.log", help="Location of Fail2Ban logfile")
-    start.add_argument("--mmdb", type=str, required=False,
-                           default="GeoLite2-City.mmdb", help="Location of the .mmdb binary DB file")
-
+                       default="/var/log/fail2ban.log", help="Location of Fail2Ban logfile")
     
+    # Sub-command to show table
+    show.add_argument("--table", type=str, required=False,
+                      default="banned", help="Table to print to stdout")
+    show.add_argument("--db", type=str, required=False,
+                      default="sqlite.db", help="Location of the sqlite db file")
+
     # Complete the activation of ArgumentParser()
     args = parser.parse_args()
     
@@ -208,9 +226,11 @@ def cli():
     if args.command == "download":
         mmdb_download(action="download", license_key=args.license)
     elif args.command == "start":
-        main(path_log=args.logfile, path_mmdb=args.mmdb)
+        main(path_log=args.logfile)
     elif args.command == "clean":
         mmdb_download(action="clean")
+    elif args.command == "show":
+        show_table(table=args.table, db=args.db)
     else:
         # If no subcommand supplied
         parser.print_help()
@@ -220,7 +240,6 @@ if __name__ == "__main__":
     try:
         # Run cli() function, which first hits ArgumentParser()
         cli()
-    
     except KeyboardInterrupt:
         # Gracefully exit without traceback upon Ctrl-c
         sys.exit()

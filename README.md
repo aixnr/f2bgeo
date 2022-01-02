@@ -15,8 +15,8 @@ All users are imposed with [2,000 total direct downloads limit in a 24 hour peri
 - [Fail2Ban SSHD Jail](#fail2ban-sshd-jail)
 - [Downloading MaxMind GeoLite2 Database](#downloading-maxmind-geolite2-database)
 - [Running](#running)
-- [How Does It Work](#how-does-it-work)
 - [Denied But Not Banned](#denied-but-not-banned)
+- [Inspecting the SQLite DB](#inspecting-the-sqlite-db)
 - [License](#license)
 
 ## Dependencies
@@ -25,7 +25,7 @@ Create a virtual environment for python (tested with `conda env` and `python -m 
 
 ```bash
 # Required by f2bgeo.py
-pip install geoip2 maxminddb sqlalchemy
+pip install geoip2 maxminddb sqlalchemy tabulate
 
 # For generating standalone linux executable
 pip install pyinstaller
@@ -76,9 +76,9 @@ Since I was not in the mood to learn yet another firewall tool, I decided to jus
 ## Downloading MaxMind GeoLite2 Database
 
 There are [three different databases](https://dev.maxmind.com/static/pdf/GeoLite2-IP-MetaData-Databases-Comparison-Chart.pdf): GeoLite2 *ASN*, GeoLite2 *City*, and GeoLite2 *Country*.
-The *City* version contains everything that is in the *Country* but offers more information pertaining to an IP.
-The *ASN* version provides two additional information: ASN info and name of the organization (ISP) managing that ASN.
-`f2bgeo.py` is designed for the `City` version. 
+The *City* database contains everything that is in the *Country* but offers more information pertaining to an IP.
+The *ASN* database provides two additional information: ASN info and name of the organization (ISP) managing that ASN.
+`f2bgeo.py` is designed for the `City` and `ASN` databases. 
 
 To download the database (the scripts handles extraction):
 
@@ -86,9 +86,9 @@ To download the database (the scripts handles extraction):
 ./f2bgeo download --license "LICENSE_KEY"
 ```
 
-It downloads the database archive `GeoLite2-City.tar.gz`, extracts it, and place `GeoLite2-City.mmdb` in current directory.
+This command downloads and unpacks `GeoLite2-ASN.mmdb` and `GeoLite2-City.mmdb` in current directory.
 
-According to MaxMind, they update the databases weekly on Tuesday. For users that would like to automate the download (`cron` or `systemd` timer), `f2bgeo` provides `clean` subcommand to remove the `GeoLite2-City.mmdb` file for convenience.
+According to MaxMind, they update the databases weekly on Tuesday. For users that would like to automate the download (`cron` or `systemd` timer), `f2bgeo` provides `clean` subcommand to remove the database files for convenience.
 
 ```bash
 ./f2bgeo clean
@@ -99,19 +99,15 @@ According to MaxMind, they update the databases weekly on Tuesday. For users tha
 Run as root since it needs to read `/var/log/fail2ban.log`:
 
 ```bash
+# Assumes location for /var/log/fail2ban.log
 sudo ./f2bgeo start
+
+# Specifies location for fail2ban.log
+sudo ./f2bgeo start --logfile "/var/log/fail2ban.log"
 ```
 
-It runs at the foreground and spitting information on banned IPs.
+It runs at the foreground and prints information on banned IPs.
 At the same time, it also writes to a local `sqlite.db` database file.
-
-```bash
-Banned 2.56.57.216 from Virginia, United States at 11:00
-Banned 180.73.43.14 from Selangor, Malaysia at 14:07
-Banned 116.105.222.202 from Da Nang, Vietnam at 15:32
-Banned 116.98.60.14 from Ho Chi Minh, Vietnam at 15:33
-Banned 84.58.27.240 from North Rhine-Westphalia, Germany at 16:22
-```
 
 Users can write a `systemd` unit file to automate this process.
 Otherwise, running through a `tmux` session is fine too.
@@ -119,23 +115,10 @@ Otherwise, running through a `tmux` session is fine too.
 I included data persistence with SQLite because I wanted to visualize the dataset later.
 Although visualization on Grafana can be done using Promtail and Loki, I decided to use SQLite so I did not spend extra time debugging Grafana/Loki/Promtail if it did not work.
 
-## How Does It Work?
+If you were testing this script and somehow banned yourself in the process, here's how to unban yourself assuming you have *some kind* of terminal access.
 
-Fail2Ban logs data to `/var/log/fail2ban.log` file (check your distro).
-`f2bgeo` reads it and identifies *ban* event based on a set of `regex` rules (see `regex_match_string()`), and then returned `re.groupdict()` (a dictionary of strings) of regex named capture as `cap_info`.
-
-The `main()` function passes `cap_info` to `geoip_reader()` which uses `geoip2.database.Reader()` to return GeoIP information associated with `cap_info["ip"]`.
-It then prints to `stdout` and logs to the `sqlite.db` through `record_banned()` function.
-
-The following information are stored in `sqlite.db`: date, time, ip, city, division, country, latitude, longitude.
-For time-series visualization, users need to convert date and time to linux epoch (not implemented in the script).
-In SQLite, this can be done with the following sql query:
-
-```sql
-SELECT
-  strftime("%s", date || " " || time) as epochtime
-FROM
-  banned
+```bash
+sudo fail2ban-client set sshd unbanip <your-ip-address>
 ```
 
 ## Denied But Not Banned
@@ -144,8 +127,9 @@ My Fail2Ban example config bans an IP address after 3 consecutive failed attempt
 That is great, but that means `f2bgeo.py` only logs IP addresses that were actually denied.
 
 There are attacks that are just one time and then bounces off.
-`failedsshd.py` is designed to collect this type of attempt (might not even be an attack) by reading output from `journalctl` that mentions either invalid user or someone tries to access SSH as `root`.
-It writes to the same `sqlite.db` database file but in a separate table, `ssh_denied`. Also uses `geoip2.database.Reader()` to get geoip information.
+`failedsshd.py` is designed to collect this type of attempt (might not even be an attack) by reading output from `journalctl -u sshd` that mentions either invalid user or someone tries to access SSH as `root` user.
+It writes to the same `sqlite.db` database file but in a separate table, `ssh_denied`.
+It also uses `geoip2.database.Reader()` to get geoip information.
 
 ```bash
 # Compile
@@ -155,8 +139,54 @@ pyinstaller --onefile failedsshd.py
 ./failedsshd
 ```
 
-Root privilege is not needed to run it.
+Root privilege is not needed to run `failedsshd`.
 Like `f2bgeo.py`, it outputs to `stdout` and writing to an sqlite database at the same time.
+
+## Inspecting The SQLite DB
+
+This command opens an `sqlite` shell session.
+
+```bash
+# Open sqlite3 console in app root
+sqlite3
+```
+
+Interact with the database.
+
+```sql
+-- open sqlite.db
+.open sqlite.db
+
+-- pretty print
+.headers ON
+.mode column
+
+-- open ssh_denied table
+SELECT * FROM ssh_denied;
+
+-- exit sqlite shell
+.exit
+```
+
+The interactive shell commands above is similar to `bash` command below:
+
+```bash
+sqlite3 sqlite.db <<EOF
+.headers ON
+.mode column
+select * from ssh_denied;
+EOF
+```
+
+Thankfully, `fbgeo` has a convenient subcommand for showing the tables.
+
+```bash
+# By default, printing table "banned" to stdout
+./f2bgeo show
+
+# Or, print table "ssh_denied"
+./f2bgeo show --table "ssh_denied"
+```
 
 ## License
 

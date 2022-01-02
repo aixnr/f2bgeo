@@ -8,7 +8,6 @@ from sqlalchemy import create_engine, Column, Integer, String, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from geoip2.database import Reader
-import argparse
 
 
 # SQL Alchemy Main Config
@@ -34,6 +33,9 @@ class Record(Base):
     country = Column(String)
     latitude = Column(String)
     longitude = Column(String)
+    network = Column(String)
+    asn = Column(String)
+    org = Column(String)
 
     def __repr__(self):
         return f"Denied {self.userid} from {self.ip} at {self.datetimestr}"
@@ -68,7 +70,7 @@ def regex_matcher(line, match_to):
     _invalid_user = rf"{_datetimestr}(.+?user )(?P<userid>\w*)( from ){_ip}(.*)"
 
     # Matches to: "Jan 02 02:26:35 athena sshd[1156190]: User root from 98.13.35.92 not allowed because not listed in AllowUsers"
-    # Named groups:
+    # Named groups: datetimestr, ip
     _root_user = rf"{_datetimestr}(.* User root from ){_ip}(.*)"
 
     _caught = {}
@@ -84,7 +86,7 @@ def regex_matcher(line, match_to):
     return _caught
 
 
-def record(caught_dict, mmdb):
+def record(caught_dict):
     """
     Parameter
     ---------
@@ -108,14 +110,20 @@ def record(caught_dict, mmdb):
     # Unixepoch value (for timeseries), float
     _unixepoch = _datetime_object.timestamp()
 
-    # Read where they are coming from
-    with Reader(mmdb) as reader:
+    # Read from GeoLite2-City.mmdb
+    with Reader("GeoLite2-City.mmdb") as reader:
         x = reader.city(_ip)
         _country = x.country.name
         _division = x.subdivisions.most_specific.name
         _city = x.city.name
         _lat = x.location.latitude
         _lon = x.location.longitude
+
+    with Reader("GeoLite2-ASN.mmdb") as reader:
+        x = reader.asn(_ip)
+        _network = x.network.with_prefixlen
+        _asn = x.autonomous_system_number
+        _org = x.autonomous_system_organization
 
     print(f"Caught {_userid} from {_ip} at {_date}")
 
@@ -128,7 +136,10 @@ def record(caught_dict, mmdb):
         division = _division,
         city = _city,
         latitude = _lat,
-        longitude = _lon
+        longitude = _lon,
+        network = _network,
+        asn = _asn,
+        org = _org
     )
 
     session.add(denied_record)
@@ -162,27 +173,19 @@ def journal_tail():
             yield line
 
 
-def main(path_mmdb):
+def main():
     journal = journal_tail()
     for line in journal:
         if line.find("Invalid") != -1:
             caught = regex_matcher(line, match_to="invalid")
-            record(caught, mmdb=path_mmdb)
+            record(caught)
         elif line.find("User root") != -1:
             caught = regex_matcher(line, match_to="root")
-            record(caught, mmdb=path_mmdb)
-        
-
-def cli():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mmdb", type=str, required=False, default="GeoLite2-City.mmdb")
-    args = parser.parse_args()
-
-    main(path_mmdb=args.mmdb)
+            record(caught)
 
 
 if __name__ == "__main__":
     try:
-        cli()
+        main()
     except KeyboardInterrupt:
         sys.exit()
