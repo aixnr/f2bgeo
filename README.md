@@ -1,13 +1,13 @@
 # `f2bgeo` Fail2Ban GeoLocation Script 
 
-I wanted to know which regions, roughly, were the offending IPs that tried to get into my SSH coming from.
-MaxMind provides the *lite* version of their GeoIP2 offering called [GeoLite2](https://dev.maxmind.com/geoip?lang=en), albeit at a lower accuracy, for free.
-But that is fine for my purpose, which is just to assign *identifier* to the IP addresses that my Fail2Ban configuration blocked after 3 failed attempts.
+I wanted to know which regions, roughly, where the offending IPs that tried to get into my cloud servers (via SSH) coming from.
+MaxMind provides a *lite* version of their GeoIP2 offering called [GeoLite2](https://dev.maxmind.com/geoip?lang=en), albeit at a lower accuracy, for free.
+But that is fine for my purpose, which is just to put a rough *face* to these offending IP addresses that my Fail2Ban configuration blocked after 3 consecutive failed attempts.
 
-User of this script needs to [register an account with MaxMind to access GeoLite2](https://www.maxmind.com/en/geolite2/signup).
+Users of this script need to [register an account with MaxMind to access GeoLite2](https://www.maxmind.com/en/geolite2/signup).
 MaxMind imposes a limitation of 1,000 IP lookups per day if users are performing API query.
 However, I decided to do it slightly differently by downloading their database file.
-All users are imposed with [2,000 total direct downloads limit in a 24 hour period](https://support.maxmind.com/hc/en-us/articles/4408216129947).
+All users (regardless of account plan) are imposed with [2,000 total direct downloads limit in a 24 hour period](https://support.maxmind.com/hc/en-us/articles/4408216129947).
 
 **Table of Contents**
 
@@ -38,16 +38,16 @@ pyinstaller --onefile f2bgeo.py
 ```
 
 Locate the compiled binary at `./dist/f2bgeo`.
-To run it, `f2bgeo` depends on system's `wget` to download the database archive from MaxMind website.
+To run it, `f2bgeo` depends on system's `wget` to download database archives from MaxMind website.
 
 The rationale for compiling into a binary file because I was developing the script locally with the aforementioned dependencies.
-For deploying on a remote server, I prefer not to set up the environments again and would rather run it as a binary.
+For deploying on a remote server, I prefer not to set up the environment again and would rather run it as a binary.
 Another reason is that `f2bgeo` needs to access `/var/local/fail2ban.log` which is restricted to root.
 Running the script with `sudo python f2geo.py start` leads to an interesting complication.
 
 ## Fail2Ban SSHD Jail
 
-My `/etc/fail2ban/jail.local` contains the following block for `sshd`:
+My `/etc/fail2ban/jail.local` contains the following directives for `sshd` section:
 
 ```bash
 [sshd]
@@ -70,7 +70,7 @@ Verify this by restarting `fail2ban` and tail `/var/log/fail2ban.log`.
 >> ERROR   Failed to execute ban jail 'sshd' action 'firewallcmd-rich-rules'
 ```
 
-I did this because `firewalld` kicked me out of my SSH session soon after activation.
+I did this because `firewalld` kicked me out of my SSH session soon after it was activated.
 Since I was not in the mood to learn yet another firewall tool, I decided to just stick with `iptables` and `ufw`.
 
 ## Downloading MaxMind GeoLite2 Database
